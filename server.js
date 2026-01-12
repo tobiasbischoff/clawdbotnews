@@ -38,6 +38,7 @@ const MAX_COMMITS_PER_PROMPT = Number(
 const CHUNK_SIZE = Number(process.env.CHUNK_SIZE || 80);
 const SUMMARY_MAX_TOKENS = Number(process.env.SUMMARY_MAX_TOKENS || 1200);
 const SUMMARY_FILE_COMMITS = Number(process.env.SUMMARY_FILE_COMMITS || 8);
+const SUMMARY_CONCURRENCY = Number(process.env.SUMMARY_CONCURRENCY || 3);
 
 const summarizer = AI_KEY
   ? new Anthropic({
@@ -104,6 +105,15 @@ db.run(`
     response_json TEXT,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (repo, date)
+  );
+  CREATE TABLE IF NOT EXISTS commit_ai (
+    sha TEXT PRIMARY KEY,
+    repo TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    label TEXT NOT NULL,
+    sentence TEXT NOT NULL,
+    model TEXT,
+    updated_at TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
@@ -174,6 +184,15 @@ function dbAll(sql, params = []) {
   }
   stmt.free();
   return rows;
+}
+
+function dbInsertMany(sql, rows) {
+  dbRun("BEGIN");
+  for (const params of rows) {
+    dbRun(sql, params);
+  }
+  dbRun("COMMIT");
+  persistDb();
 }
 
 function getMeta(key) {
@@ -679,6 +698,175 @@ function sanitizeCommitTitle(title = "") {
   return cleaned || title.trim();
 }
 
+function buildCommitPrompt(commit) {
+  const files = (commit.files || [])
+    .map((file) => (typeof file === "string" ? file : file.filename || ""))
+    .filter(Boolean)
+    .slice(0, 12);
+  return `Commit:
+Title: ${commit.title || ""}
+Message: ${commit.message || ""}
+Files: ${files.length ? files.join(", ") : "n/a"}
+Stats: +${commit.stats?.additions || 0} -${commit.stats?.deletions || 0}
+
+Return JSON only:
+{
+  "label": "feature|fix|refactor|docs|test|chore|other|update",
+  "sentence": "One sentence describing what this commit did in plain language."
+}
+No markdown, no extra keys.`;
+}
+
+async function classifyCommitWithAi(commit) {
+  const prompt = buildCommitPrompt(commit);
+  const response = await summarizer.messages.create({
+    model: AI_MODEL,
+    max_tokens: 200,
+    temperature: 0.1,
+    thinking: { type: "disabled" },
+    system:
+      "You label a single commit. Be concrete, avoid generic wording. " +
+      "Return only JSON with label + sentence.",
+    messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
+  });
+  const rawText = response.content
+    ?.filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n")
+    .trim();
+  const parsed = extractJson(rawText || "");
+  const label = String(parsed?.label || classifyCommit(commit.title || ""))
+    .toLowerCase()
+    .trim();
+  const sentence =
+    String(parsed?.sentence || sanitizeCommitTitle(commit.title || "")).trim() ||
+    "No summary available.";
+  return {
+    sha: commit.sha,
+    label,
+    sentence,
+    model: response.model,
+  };
+}
+
+async function runWithConcurrency(items, limit, handler) {
+  const results = [];
+  let index = 0;
+  const workers = Array.from({ length: limit }).map(async () => {
+    while (index < items.length) {
+      const current = items[index];
+      index += 1;
+      results.push(await handler(current));
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+async function getCommitSummaries(commits, force) {
+  const pending = [];
+  const results = [];
+  for (const commit of commits) {
+    const cached = !force ? getCommitAi(commit.sha) : null;
+    if (cached) {
+      results.push({
+        sha: commit.sha,
+        label: cached.label,
+        sentence: cached.sentence,
+        model: cached.model,
+      });
+      continue;
+    }
+    pending.push(commit);
+  }
+
+  if (!pending.length) return results;
+  const generated = await runWithConcurrency(
+    pending,
+    SUMMARY_CONCURRENCY,
+    async (commit) => classifyCommitWithAi(commit)
+  );
+  cacheCommitAi(generated);
+  return results.concat(generated);
+}
+
+async function summarizeLabel(label, sentences) {
+  if (!sentences.length) return "";
+  if (sentences.length === 1) return sentences[0];
+  const prompt = `Label: ${label}
+Sentences:
+${sentences.map((line, idx) => `${idx + 1}. ${line}`).join("\n")}
+
+Return JSON only:
+{
+  "text": "Combine these into 1-3 concise sentences. Keep concrete details."
+}`;
+  const response = await summarizer.messages.create({
+    model: AI_MODEL,
+    max_tokens: 300,
+    temperature: 0.1,
+    thinking: { type: "disabled" },
+    system:
+      "You merge short commit sentences into a concise label summary. " +
+      "No generic filler. Return only JSON.",
+    messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
+  });
+  const rawText = response.content
+    ?.filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n")
+    .trim();
+  const parsed = extractJson(rawText || "");
+  return String(parsed?.text || sentences.join(" ")).trim();
+}
+
+async function buildLabelSummary(commitSummaries) {
+  const buckets = new Map();
+  for (const entry of commitSummaries) {
+    const label = entry.label || "other";
+    if (!buckets.has(label)) buckets.set(label, []);
+    buckets.get(label).push(entry.sentence);
+  }
+
+  const output = [];
+  for (const [label, sentences] of buckets.entries()) {
+    const text = await summarizeLabel(label, sentences);
+    output.push({ label, text, count: sentences.length });
+  }
+
+  return output.sort((a, b) => b.count - a.count);
+}
+
+async function buildOverallSummary(labelSummaries) {
+  if (!labelSummaries.length) return "Summary unavailable.";
+  const prompt = `Label summaries:
+${labelSummaries
+  .map((entry) => `- ${entry.label}: ${entry.text}`)
+  .join("\n")}
+
+Return JSON only:
+{
+  "summary": "1-2 sentence daily summary."
+}`;
+  const response = await summarizer.messages.create({
+    model: AI_MODEL,
+    max_tokens: 240,
+    temperature: 0.1,
+    thinking: { type: "disabled" },
+    system:
+      "You write a short daily summary from label summaries. " +
+      "No generic filler. Return only JSON.",
+    messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
+  });
+  const rawText = response.content
+    ?.filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n")
+    .trim();
+  const parsed = extractJson(rawText || "");
+  return String(parsed?.summary || labelSummaries[0].text).trim();
+}
+
 function extractFileHint(files = [], { allowDocs = true } = {}) {
   if (!files.length) return "";
   const skipNames = new Set([
@@ -943,187 +1131,18 @@ async function createSummaryPayload({ date, commits, force = false, debug = fals
     throw error;
   }
 
-  const systemPrompt =
-    "You are a lobster keeping a clear, friendly daily change log. " +
-    "Summarize changes in plain language without corporate tone. " +
-    "Name concrete areas (folders, commands, features) instead of generic phrases. " +
-    "Avoid using the word 'update' or 'updates' unless referring to a version. " +
-    "Classify work as feature, fix, refactor, docs, test, or chore. " +
-    "Be concise, factual, and avoid speculation.";
-
-  const summaryShape = `{\n  \"summary\": \"1-2 sentence summary\",\n  \"highlights\": [\n    { \"type\": \"feature|fix|refactor|docs|test|chore|other\", \"what\": \"what changed\", \"where\": \"folder or file (e.g. src/config, docs/providers/minimax.md)\" }\n  ],\n  \"type_breakdown\": { \"feature\": 0, \"fix\": 0, \"refactor\": 0, \"docs\": 0, \"test\": 0, \"chore\": 0, \"other\": 0 },\n  \"risks\": [\"short risk if any\", \"or empty array if none\"]\n}`;
-
-  const attempts = [];
-  const callModel = async ({ overrideSystem, prompt, maxTokens }) => {
-    const response = await summarizer.messages.create({
-      model: AI_MODEL,
-      max_tokens: maxTokens ?? SUMMARY_MAX_TOKENS,
-      temperature: 0.1,
-      thinking: { type: "disabled" },
-      system: overrideSystem || systemPrompt,
-      messages: [
-        {
-          role: "user",
-          content: [{ type: "text", text: prompt }],
-        },
-      ],
-    });
-    attempts.push({
-      id: response.id,
-      model: response.model,
-      content: response.content,
-      stop_reason: response.stop_reason,
-      usage: response.usage,
-      system: overrideSystem || systemPrompt,
-    });
-    return response;
-  };
-
-  const makePrompt = (commitLines, extraContext = "") => `
-Date: ${date}
-Repository: ${REPO}
-${extraContext}
-Commits (newest first):
-${commitLines}
-
-Guidelines:
-- Provide 6-10 highlights describing distinct themes (not individual commits).
-- Avoid listing raw commit titles.
-- Use concrete terms like folder names, tools, features, or config areas.
-- Do not use the word "update" or "updates".
-- For each highlight, fill in "what" and "where". "where" should be a folder or file path.
-
-Return JSON only with this shape:
-${summaryShape}
-Return a single valid JSON object only. Do not wrap it in markdown code fences.
-`;
-
-  await enrichCommitFiles(commits, SUMMARY_FILE_COMMITS);
-  const filesForShas = new Set(
-    selectTopCommits(commits, SUMMARY_FILE_COMMITS).map((commit) => commit.sha)
-  );
-  const chunks =
-    commits.length > MAX_COMMITS_PER_PROMPT
-      ? chunkArray(commits, CHUNK_SIZE)
-      : [commits];
-  const chunkSummaries = [];
-  const chunkResponses = [];
-  let finalPrompt = "";
-  let rawText = "";
-  let parsed = null;
-
-  for (let index = 0; index < chunks.length; index += 1) {
-    const chunk = chunks[index];
-    const extraContext =
-      chunks.length > 1
-        ? `Chunk ${index + 1} of ${chunks.length}.`
-        : "";
-    const commitLines = formatCommitLines(chunk, {
-      includeFiles: true,
-      filesForShas,
-    });
-    const chunkPrompt = makePrompt(commitLines, extraContext);
-    let response = await callModel({
-      prompt: chunkPrompt,
-      maxTokens: Math.min(SUMMARY_MAX_TOKENS, 800),
-    });
-
-    let chunkText = response.content
-      ?.filter((block) => block.type === "text")
-      .map((block) => block.text)
-      .join("\n")
-      .trim();
-
-    if (!chunkText) {
-      const retrySystem =
-        systemPrompt +
-        " Return ONLY a valid JSON object. Do not include analysis or reasoning.";
-      response = await callModel({
-        overrideSystem: retrySystem,
-        prompt: chunkPrompt,
-        maxTokens: Math.min(SUMMARY_MAX_TOKENS, 800),
-      });
-      chunkText = response.content
-        ?.filter((block) => block.type === "text")
-        .map((block) => block.text)
-        .join("\n")
-        .trim();
-    }
-
-    const parsedChunk = parseAiResponse(chunkText || "", chunk);
-    chunkSummaries.push(parsedChunk);
-    chunkResponses.push({ prompt: chunkPrompt, rawText: chunkText || "" });
-  }
-
-  if (chunkSummaries.length === 1) {
-    parsed = chunkSummaries[0];
-    rawText = chunkResponses[0]?.rawText || "";
-    finalPrompt = chunkResponses[0]?.prompt || "";
-  } else {
-    const combinedPrompt = `
-Date: ${date}
-Repository: ${REPO}
-Total commits: ${commits.length}
-Type breakdown (authoritative): ${JSON.stringify(buildTypeBreakdown(commits))}
-Chunk summaries (for context):
-${chunkSummaries
-  .map(
-    (summary, idx) =>
-      `${idx + 1}. Summary: ${summary.summary}\nHighlights: ${
-        summary.highlights?.join("; ") || "n/a"
-      }\nRisks: ${summary.risks?.join("; ") || "n/a"}`
-  )
-  .join("\n\n")}
-
-Guidelines:
-- Provide 6-10 highlights describing distinct themes (not individual commits).
-- Avoid listing raw commit titles.
-- Use concrete terms like folder names, tools, features, or config areas.
-- Do not use the word "update" or "updates".
-- For each highlight, fill in "what" and "where". "where" should be a folder or file path.
-
-Return JSON only with this shape:
-${summaryShape}
-Return a single valid JSON object only. Do not wrap it in markdown code fences.
-`;
-
-    const response = await callModel({
-      prompt: combinedPrompt,
-      maxTokens: SUMMARY_MAX_TOKENS,
-      overrideSystem:
-        systemPrompt +
-        " Return ONLY a valid JSON object. Do not include analysis or reasoning.",
-    });
-
-    rawText = response.content
-      ?.filter((block) => block.type === "text")
-      .map((block) => block.text)
-      .join("\n")
-      .trim();
-
-    parsed = parseAiResponse(rawText || "", commits);
-    if (parsed) {
-      parsed.type_breakdown = buildTypeBreakdown(commits);
-    }
-    finalPrompt = combinedPrompt.trim();
-  }
-
-  if (parsed) {
-    parsed.type_breakdown = buildTypeBreakdown(commits);
-    const minHighlights = 6;
-    parsed.highlights = buildConcreteHighlightObjects(commits, minHighlights);
-  }
-
-  const responseSnapshot = {
-    attempts,
-    chunks: chunkSummaries.length,
-    chunkResponses,
-  };
-
+  const commitSummaries = await getCommitSummaries(commits, force);
+  const labelSummaries = await buildLabelSummary(commitSummaries);
+  const summaryText = await buildOverallSummary(labelSummaries);
   const payload = {
-    summary: parsed || null,
-    raw: rawText,
-    cache: { source: "minimax", chunks: chunkSummaries.length },
+    summary: {
+      summary: summaryText,
+      buckets: labelSummaries,
+      type_breakdown: buildTypeBreakdown(commits),
+      risks: [],
+    },
+    raw: "",
+    cache: { source: "minimax" },
   };
 
   dbRun(
@@ -1146,23 +1165,15 @@ Return a single valid JSON object only. Do not wrap it in markdown code fences.
       REPO,
       date,
       fingerprint,
-      parsed ? JSON.stringify(parsed) : null,
-      rawText,
-      finalPrompt || "",
-      rawText,
-      JSON.stringify(responseSnapshot),
+      JSON.stringify(payload.summary),
+      "",
+      "",
+      "",
+      JSON.stringify({ labelSummaries }),
       new Date().toISOString(),
     ]
   );
   persistDb();
-
-  if (debug) {
-    payload.debug = {
-      prompt: finalPrompt || "",
-      responseText: rawText,
-      responseJson: responseSnapshot,
-    };
-  }
 
   return payload;
 }
@@ -1382,6 +1393,45 @@ function cacheIssues(items) {
   }
   dbRun("COMMIT");
   persistDb();
+}
+
+function getCommitAi(sha) {
+  const row = dbGet(
+    `
+    SELECT label, sentence, model, updated_at
+    FROM commit_ai
+    WHERE sha = ?
+  `,
+    [sha]
+  );
+  return row || null;
+}
+
+function cacheCommitAi(entries) {
+  if (!entries.length) return;
+  const now = new Date().toISOString();
+  dbInsertMany(
+    `
+    INSERT INTO commit_ai (sha, repo, branch, label, sentence, model, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(sha) DO UPDATE SET
+      repo = excluded.repo,
+      branch = excluded.branch,
+      label = excluded.label,
+      sentence = excluded.sentence,
+      model = excluded.model,
+      updated_at = excluded.updated_at
+  `,
+    entries.map((entry) => [
+      entry.sha,
+      REPO,
+      BRANCH,
+      entry.label,
+      entry.sentence,
+      entry.model || null,
+      now,
+    ])
+  );
 }
 
 function loadIssues({ sinceIso, isPr }) {

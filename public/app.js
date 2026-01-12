@@ -431,7 +431,7 @@ function buildSummaryHtml(summary) {
     return "<p>Commit summary unavailable. Try again.</p>";
   }
 
-  const highlightItems = summary.highlights || [];
+  const highlightItems = summary.buckets || summary.highlights || [];
   const risks = summary.risks || [];
 
   const guessType = (text) => {
@@ -463,6 +463,13 @@ function buildSummaryHtml(summary) {
   });
 
   highlightItems.forEach((item) => {
+    if (item && item.label && item.text) {
+      rows.push({
+        type: item.label.toLowerCase(),
+        text: item.text,
+      });
+      return;
+    }
     const normalized = normalizeHighlight(item);
     if (!normalized || !normalized.what) return;
     const whereText = normalized.where ? ` — ${normalized.where}` : "";
