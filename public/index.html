@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Clawdbot Daily — Engineering Change Brief</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="icon" type="image/svg+xml" href="/spark.svg" />
+  </head>
+  <body data-theme="dark">
+    <div class="bg-atmosphere" aria-hidden="true"></div>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-icon">⚡</div>
+        <div>
+          <p class="brand-title">Clawdbot Daily</p>
+          <p class="brand-subtitle">Executive engineering brief</p>
+        </div>
+      </div>
+      <div class="repo-pill" id="repoPill">Repository</div>
+    </header>
+
+    <main class="container">
+      <section class="hero">
+        <div class="hero-copy">
+          <span class="hero-kicker">Daily engineering brief</span>
+          <h1 class="hero-title">See what changed, every day.</h1>
+          <p class="hero-subtitle">
+            Automated summaries of every commit in the Clawdbot repo, organized
+            for leadership. Track velocity, spot risk, and understand progress
+            at a glance.
+          </p>
+          <div class="hero-meta">
+            <div class="meta-card">
+              <span class="meta-label">Latest sync</span>
+              <span class="meta-value" id="lastUpdated">--</span>
+            </div>
+            <div class="meta-card">
+              <span class="meta-label">Commit summary</span>
+              <span class="meta-value" id="aiStatus">--</span>
+            </div>
+          </div>
+          <div class="button-row hero-actions">
+            <button class="btn primary" id="refreshBtn">Refresh</button>
+            <button class="btn ghost" id="summarizeAllBtn">
+              Summarize all days
+            </button>
+            <button class="btn ghost" id="regenerateAllBtn">
+              Regenerate all summaries
+            </button>
+          </div>
+          <p class="helper" id="helperText">
+            Summaries use MiniMax (Anthropic-compatible) when configured.
+          </p>
+        </div>
+      </section>
+
+      <section class="timeline" id="timeline">
+        <div class="loading-card" id="loadingCard">
+          <div class="spinner"></div>
+          <div>
+            <h3>Pulling the latest commits…</h3>
+            <p>Hang tight while we build your daily brief.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p>
+        Built for the CTO/CEO view — fast clarity without the noise of the git
+        log.
+      </p>
+    </footer>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
