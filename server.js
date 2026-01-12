@@ -2050,6 +2050,87 @@ app.get("/api/summary", (req, res) => {
   });
 });
 
+function escapeXml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
+function wrapCdata(text) {
+  const safe = String(text ?? "").replaceAll("]]>", "]]]]><![CDATA[>");
+  return `<![CDATA[${safe}]]>`;
+}
+
+function formatRssDate(dateValue) {
+  const date = new Date(dateValue);
+  return date.toUTCString();
+}
+
+app.get("/feed.xml", (req, res) => {
+  const days = 7;
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  const sinceIso = since.toISOString();
+  const commits = loadCachedCommits({ sinceIso });
+  const summaries = loadSummaries({ sinceIso });
+  const summariesByDate = new Map(
+    summaries.map((entry) => [entry.date, entry.summary])
+  );
+  const grouped = groupByDate(commits);
+  const baseUrl = `${req.protocol}://${req.get("host")}`;
+  const feedUrl = `${baseUrl}/feed.xml`;
+  const now = new Date();
+
+  const items = grouped.map((day) => {
+    const summary = summariesByDate.get(day.date);
+    const additions = day.commits.reduce(
+      (total, commit) => total + (commit.stats?.additions || 0),
+      0
+    );
+    const deletions = day.commits.reduce(
+      (total, commit) => total + (commit.stats?.deletions || 0),
+      0
+    );
+    const title = `Clawdbot news — ${day.date} (${day.commits.length} commits)`;
+    const summaryText = summary?.summary || "Summary not available yet.";
+    const buckets = summary?.buckets || [];
+    const bucketText = buckets.length
+      ? buckets.map((bucket) => `• ${bucket.label.toUpperCase()}: ${bucket.text}`).join("\n")
+      : "";
+    const description = `${summaryText}\n\n${bucketText}\n\nCommits: ${
+      day.commits.length
+    } (+${additions} / -${deletions})`;
+    const pubDate = formatRssDate(`${day.date}T12:00:00.000Z`);
+    return `
+      <item>
+        <title>${escapeXml(title)}</title>
+        <link>${escapeXml(baseUrl)}</link>
+        <guid isPermaLink="false">${escapeXml(`${REPO}:${BRANCH}:${day.date}`)}</guid>
+        <pubDate>${escapeXml(pubDate)}</pubDate>
+        <description>${wrapCdata(description)}</description>
+      </item>
+    `;
+  });
+
+  const rss = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>${escapeXml(`Clawdbot news — ${REPO}`)}</title>
+    <link>${escapeXml(baseUrl)}</link>
+    <atom:link href="${escapeXml(feedUrl)}" rel="self" type="application/rss+xml" />
+    <description>${escapeXml(
+      "Daily lobster log of commits with AI summaries."
+    )}</description>
+    <lastBuildDate>${escapeXml(formatRssDate(now))}</lastBuildDate>
+    ${items.join("\n")}
+  </channel>
+</rss>`;
+
+  res.type("application/rss+xml; charset=utf-8").send(rss);
+});
+
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
