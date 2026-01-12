@@ -763,11 +763,11 @@ async function runWithConcurrency(items, limit, handler) {
   return results;
 }
 
-async function getCommitSummaries(commits, force) {
+async function getCommitSummaries(commits, forceCommitAi) {
   const pending = [];
   const results = [];
   for (const commit of commits) {
-    const cached = !force ? getCommitAi(commit.sha) : null;
+    const cached = !forceCommitAi ? getCommitAi(commit.sha) : null;
     if (cached) {
       results.push({
         sha: commit.sha,
@@ -790,6 +790,12 @@ async function getCommitSummaries(commits, force) {
   return results.concat(generated);
 }
 
+function truncateWords(text, maxWords) {
+  const words = String(text).trim().split(/\s+/).filter(Boolean);
+  if (words.length <= maxWords) return String(text).trim();
+  return `${words.slice(0, maxWords).join(" ")}.`;
+}
+
 async function summarizeLabel(label, sentences) {
   if (!sentences.length) return "";
   if (sentences.length === 1) return sentences[0];
@@ -799,7 +805,7 @@ ${sentences.map((line, idx) => `${idx + 1}. ${line}`).join("\n")}
 
 Return JSON only:
 {
-  "text": "Combine these into 1-3 concise sentences. Keep concrete details."
+  "text": "Combine these into 1-3 concise sentences (max 100 words). Focus on the most important changes only, drop minor test/doc churn unless it is substantial, and keep it concrete."
 }`;
   const response = await summarizer.messages.create({
     model: AI_MODEL,
@@ -808,7 +814,8 @@ Return JSON only:
     thinking: { type: "disabled" },
     system:
       "You merge short commit sentences into a concise label summary. " +
-      "No generic filler. Return only JSON.",
+      "Be specific, remove noise, and keep it under 100 words. " +
+      "Return only JSON.",
     messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
   });
   const rawText = response.content
@@ -817,7 +824,7 @@ Return JSON only:
     .join("\n")
     .trim();
   const parsed = extractJson(rawText || "");
-  return String(parsed?.text || sentences.join(" ")).trim();
+  return truncateWords(String(parsed?.text || sentences.join(" ")).trim(), 100);
 }
 
 async function buildLabelSummary(commitSummaries) {
@@ -1131,7 +1138,7 @@ async function createSummaryPayload({ date, commits, force = false, debug = fals
     throw error;
   }
 
-  const commitSummaries = await getCommitSummaries(commits, force);
+  const commitSummaries = await getCommitSummaries(commits, false);
   const labelSummaries = await buildLabelSummary(commitSummaries);
   const summaryText = await buildOverallSummary(labelSummaries);
   const payload = {
