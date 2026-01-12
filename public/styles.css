@@ -139,12 +139,16 @@ body {
 }
 
 .sync-pill {
+  appearance: none;
+  font: inherit;
+  line-height: 1;
   border: 1px solid var(--line);
   padding: 6px 12px;
   border-radius: 999px;
   background: var(--surface-muted);
   font-size: 12px;
   color: var(--ink-soft);
+  cursor: default;
 }
 
 .sync-pill.syncing {
@@ -155,6 +159,17 @@ body {
 .sync-pill.stale {
   color: #f6b29f;
   border-color: rgba(232, 106, 71, 0.4);
+}
+
+.sync-pill.ready {
+  color: #9be5b8;
+  border-color: rgba(155, 229, 184, 0.45);
+  background: rgba(18, 31, 23, 0.8);
+  cursor: pointer;
+}
+
+.sync-pill.ready:hover {
+  border-color: rgba(155, 229, 184, 0.75);
 }
 
 .container {

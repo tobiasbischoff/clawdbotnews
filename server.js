@@ -1052,6 +1052,18 @@ function hasCommitsSince(sinceIso) {
   return Number(row?.count || 0) > 0;
 }
 
+function countCommitsSince(sinceIso) {
+  const row = dbGet(
+    `
+    SELECT COUNT(*) as count
+    FROM commits
+    WHERE repo = ? AND branch = ? AND date >= ?
+  `,
+    [REPO, BRANCH, sinceIso]
+  );
+  return Number(row?.count || 0);
+}
+
 function hasCommit(sha) {
   const row = dbGet("SELECT sha FROM commits WHERE sha = ?", [sha]);
   return Boolean(row?.sha);
@@ -1160,6 +1172,18 @@ function hasIssuesSince(sinceIso, isPr) {
     [REPO, sinceIso, isPr ? 1 : 0]
   );
   return Number(row?.count || 0) > 0;
+}
+
+function countIssuesSince(sinceIso) {
+  const row = dbGet(
+    `
+    SELECT COUNT(*) as count
+    FROM issues
+    WHERE repo = ? AND created_at >= ?
+  `,
+    [REPO, sinceIso]
+  );
+  return Number(row?.count || 0);
 }
 
 function loadSummaries({ sinceIso }) {
@@ -1293,6 +1317,7 @@ async function syncCommits({ sinceIso, force }) {
 
   const now = new Date().toISOString();
   setMeta("last_sync_at", now);
+  setMeta("last_sync_fetched_count", String(fetchedCount));
   if (backfillNeeded && reachedCutoff) {
     const backfillMs = backfillSince ? new Date(backfillSince).getTime() : null;
     const sinceCutoffMs = new Date(sinceIso).getTime();
@@ -1433,6 +1458,7 @@ async function syncIssuesAndPRs({ sinceIso, force }) {
 
   const now = new Date().toISOString();
   setMeta("last_issues_sync_at", now);
+  setMeta("last_issues_sync_fetched_count", String(fetched.length));
   return {
     synced: true,
     source: "github",
@@ -1572,7 +1598,9 @@ app.get("/api/commits", async (req, res) => {
         lastSyncAt: sync.lastSyncAt || getMeta("last_sync_at"),
         fetchSince: sync.fetchSince || null,
         fetchedCount: sync.fetchedCount || 0,
+        lastSyncFetchedCount: Number(getMeta("last_sync_fetched_count") || 0),
         pending: sync.pending || false,
+        syncing: Boolean(commitsSyncPromise),
         initializing,
         timeout: sync.timeout || false,
         commitCount: responseCommits.length,
@@ -1585,7 +1613,11 @@ app.get("/api/commits", async (req, res) => {
           lastSyncAt: issueSync.lastSyncAt || getMeta("last_issues_sync_at"),
           fetchSince: issueSync.fetchSince || null,
           fetchedCount: issueSync.fetchedCount || 0,
+          lastSyncFetchedCount: Number(
+            getMeta("last_issues_sync_fetched_count") || 0
+          ),
           pending: issueSync.pending || false,
+          syncing: Boolean(issuesSyncPromise),
           timeout: issueSync.timeout || false,
           error: issueSync.error || null,
           backoffUntil: getMeta("issues_sync_backoff_until"),
@@ -1623,6 +1655,33 @@ app.post("/api/summarize", async (req, res) => {
 
 app.get("/api/health", (req, res) => {
   res.json({ ok: true, repo: REPO, aiAvailable: Boolean(summarizer) });
+});
+
+app.get("/api/status", (req, res) => {
+  const days = Number(req.query.days || 7);
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  const sinceIso = since.toISOString();
+  res.json({
+    repo: REPO,
+    branch: BRANCH,
+    since: sinceIso,
+    cache: {
+      lastSyncAt: getMeta("last_sync_at"),
+      lastSyncFetchedCount: Number(getMeta("last_sync_fetched_count") || 0),
+      syncing: Boolean(commitsSyncPromise),
+      commitCount: countCommitsSince(sinceIso),
+      latestCommitDate: getLatestCommitDate(),
+      issues: {
+        lastSyncAt: getMeta("last_issues_sync_at"),
+        lastSyncFetchedCount: Number(
+          getMeta("last_issues_sync_fetched_count") || 0
+        ),
+        syncing: Boolean(issuesSyncPromise),
+        count: countIssuesSince(sinceIso),
+        backoffUntil: getMeta("issues_sync_backoff_until"),
+      },
+    },
+  });
 });
 
 app.get("/api/summary", (req, res) => {

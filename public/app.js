@@ -2,6 +2,10 @@ const state = {
   days: 7,
   data: null,
   initializing: false,
+  lastSyncAt: null,
+  lastIssuesSyncAt: null,
+  statusTimer: null,
+  newDataAvailable: false,
 };
 
 const elements = {
@@ -273,21 +277,80 @@ function updateMeta(data) {
   if (elements.repoLink) {
     elements.repoLink.href = `https://github.com/${data.repo}`;
   }
+}
+
+function applySyncPillStatus({ syncing, newData, lastSyncAt, error }) {
   const syncPill = elements.syncPill;
   if (!syncPill) return;
-  const cache = data.cache || {};
-  if (cache.pending) {
+  if (newData) {
     syncPill.hidden = false;
-    syncPill.textContent = cache.backfill
-      ? "Backfilling the last 7 days… showing cached data"
-      : "Syncing… showing cached data";
+    syncPill.textContent = "New data available — Reload";
+    syncPill.className = "sync-pill ready";
+    syncPill.dataset.state = "reload";
+    return;
+  }
+  if (syncing) {
+    syncPill.hidden = false;
+    syncPill.textContent = "Syncing in background…";
     syncPill.className = "sync-pill syncing";
-  } else if (cache.error) {
+    syncPill.dataset.state = "";
+    return;
+  }
+  if (error) {
     syncPill.hidden = false;
-    syncPill.textContent = "Cached data (sync error)";
+    syncPill.textContent = "Sync paused (error)";
     syncPill.className = "sync-pill stale";
-  } else {
-    syncPill.hidden = true;
+    syncPill.dataset.state = "";
+    return;
+  }
+  if (lastSyncAt) {
+    syncPill.hidden = false;
+    syncPill.textContent = `Up to date · ${formatTime(lastSyncAt)}`;
+    syncPill.className = "sync-pill";
+    syncPill.dataset.state = "";
+    return;
+  }
+  syncPill.hidden = true;
+}
+
+function startStatusPolling() {
+  if (state.statusTimer) return;
+  state.statusTimer = setInterval(fetchStatus, 20000);
+}
+
+async function fetchStatus() {
+  try {
+    const response = await fetch(`/api/status?days=${state.days}`);
+    if (!response.ok) return;
+    const data = await response.json();
+    const cache = data.cache || {};
+    const issuesCache = cache.issues || {};
+    const lastSyncAt = cache.lastSyncAt;
+    const lastIssuesSyncAt = issuesCache.lastSyncAt;
+    const newCommits =
+      lastSyncAt &&
+      state.lastSyncAt &&
+      new Date(lastSyncAt) > new Date(state.lastSyncAt) &&
+      Number(cache.lastSyncFetchedCount || 0) > 0;
+    const newIssues =
+      lastIssuesSyncAt &&
+      state.lastIssuesSyncAt &&
+      new Date(lastIssuesSyncAt) > new Date(state.lastIssuesSyncAt) &&
+      Number(issuesCache.lastSyncFetchedCount || 0) > 0;
+    const newData = Boolean(newCommits || newIssues);
+    if (!newData) {
+      state.lastSyncAt = lastSyncAt || state.lastSyncAt;
+      state.lastIssuesSyncAt = lastIssuesSyncAt || state.lastIssuesSyncAt;
+    }
+    state.newDataAvailable = newData;
+    applySyncPillStatus({
+      syncing: Boolean(cache.syncing || issuesCache.syncing),
+      newData,
+      lastSyncAt: lastSyncAt || state.lastSyncAt,
+      error: cache.error || issuesCache.error,
+    });
+  } catch {
+    // Ignore status polling errors.
   }
 }
 
@@ -330,16 +393,34 @@ async function loadCommits(force = false) {
 
     state.data = mergeSummaries(state.data, data);
     state.initializing = Boolean(data.cache?.initializing);
+    state.lastSyncAt = data.cache?.lastSyncAt || state.lastSyncAt;
+    state.lastIssuesSyncAt =
+      data.cache?.issues?.lastSyncAt || state.lastIssuesSyncAt;
+    state.newDataAvailable = false;
     if (data.cache?.initializing && data.days.length === 0) {
       renderEmpty(
         "Syncing in the background. Refresh when you want the latest.",
         "No commits stored yet"
       );
       updateMeta(state.data);
+      applySyncPillStatus({
+        syncing: Boolean(data.cache?.syncing || data.cache?.issues?.syncing),
+        newData: false,
+        lastSyncAt: data.cache?.lastSyncAt || state.lastSyncAt,
+        error: data.cache?.error || data.cache?.issues?.error,
+      });
+      startStatusPolling();
       return;
     }
     renderTimeline(state.data);
     updateMeta(state.data);
+    applySyncPillStatus({
+      syncing: Boolean(data.cache?.syncing || data.cache?.issues?.syncing),
+      newData: false,
+      lastSyncAt: data.cache?.lastSyncAt || state.lastSyncAt,
+      error: data.cache?.error || data.cache?.issues?.error,
+    });
+    startStatusPolling();
   } catch (error) {
     renderEmpty(error.message || "Unable to load commits.");
   }
@@ -466,5 +547,13 @@ elements.timeline.addEventListener("click", (event) => {
     summarizeDay(button.dataset.date, true);
   }
 });
+
+if (elements.syncPill) {
+  elements.syncPill.addEventListener("click", () => {
+    if (elements.syncPill.dataset.state === "reload") {
+      loadCommits(false);
+    }
+  });
+}
 
 loadCommits();
