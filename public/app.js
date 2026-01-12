@@ -66,6 +66,28 @@ function setLoadingMessage(title, message) {
   if (messageEl) messageEl.textContent = message;
 }
 
+function getCommitFingerprint(commits = []) {
+  return commits.map((commit) => commit.sha).join("|");
+}
+
+function mergeSummaries(prevData, nextData) {
+  if (!prevData) return nextData;
+  const prevByDate = new Map(prevData.days.map((day) => [day.date, day]));
+  const mergedDays = nextData.days.map((day) => {
+    const prevDay = prevByDate.get(day.date);
+    if (!day.summary && prevDay?.summary) {
+      return {
+        ...day,
+        summary: prevDay.summary,
+        summaryFingerprint: prevDay.summaryFingerprint,
+        summaryStale: true,
+      };
+    }
+    return day;
+  });
+  return { ...nextData, days: mergedDays };
+}
+
 function buildDayCard(day, index) {
   const aiEnabled = Boolean(state.data?.aiAvailable);
   const totalCommits = day.commits.length;
@@ -77,11 +99,24 @@ function buildDayCard(day, index) {
     (total, commit) => total + (commit.stats?.deletions || 0),
     0
   );
-  const statusText = day.summary
-    ? "Cached"
-    : aiEnabled
-    ? "Awaiting AI"
-    : "Disabled";
+  const dayFingerprint = getCommitFingerprint(day.commits);
+  const summaryFingerprint = day.summaryFingerprint || null;
+  const isToday = day.date === new Date().toISOString().split("T")[0];
+  const summaryStale =
+    Boolean(day.summaryStale) ||
+    Boolean(day.summary && summaryFingerprint && summaryFingerprint !== dayFingerprint);
+  let statusText = "Disabled";
+  if (day.summary) {
+    if (summaryStale && isToday && aiEnabled) {
+      statusText = "Refreshing";
+    } else if (summaryStale) {
+      statusText = "Outdated";
+    } else {
+      statusText = "Stored";
+    }
+  } else if (aiEnabled) {
+    statusText = "Awaiting AI";
+  }
 
   const authorsMap = new Map();
   day.commits.forEach((commit) => {
@@ -259,9 +294,11 @@ function updateMeta(data) {
 }
 
 async function loadCommits(force = false) {
-  elements.timeline.innerHTML = "";
-  elements.timeline.appendChild(elements.loadingCard);
-  elements.loadingCard.style.display = "flex";
+  const showLoading = force || !state.data;
+  if (showLoading) {
+    elements.timeline.innerHTML = "";
+    elements.timeline.appendChild(elements.loadingCard);
+    elements.loadingCard.style.display = "flex";
     if (state.initializing && !force) {
       setLoadingMessage(
         "Syncing from GitHub…",
@@ -273,6 +310,9 @@ async function loadCommits(force = false) {
         "Hang tight while we build your daily brief."
       );
     }
+  } else {
+    elements.loadingCard.style.display = "none";
+  }
 
   const params = new URLSearchParams({
     days: String(state.days),
@@ -290,7 +330,7 @@ async function loadCommits(force = false) {
       return;
     }
 
-    state.data = data;
+    state.data = mergeSummaries(state.data, data);
     state.initializing = Boolean(data.cache?.initializing);
     if (data.cache?.initializing && data.days.length === 0) {
       const synced = data.cache?.commitCount ?? 0;
@@ -307,9 +347,9 @@ async function loadCommits(force = false) {
       }
       return;
     }
-    renderTimeline(data);
-    updateMeta(data);
-    if (data.cache?.pending) {
+    renderTimeline(state.data);
+    updateMeta(state.data);
+    if (state.data.cache?.pending) {
       if (pendingSyncTimer) clearTimeout(pendingSyncTimer);
       pendingSyncTimer = setTimeout(() => {
         loadCommits(false);
@@ -318,9 +358,9 @@ async function loadCommits(force = false) {
       clearTimeout(pendingSyncTimer);
       pendingSyncTimer = null;
     }
-    if (data.aiAvailable) {
+    if (state.data.aiAvailable) {
       const todayKey = new Date().toISOString().split("T")[0];
-      const today = data.days.find((day) => day.date === todayKey);
+      const today = state.data.days.find((day) => day.date === todayKey);
       if (today) {
         summarizeDay(today.date);
       }
@@ -396,9 +436,12 @@ async function summarizeDay(date, force = false) {
 
   const aiStatus = aiBox.querySelector(".ai-status");
   const aiContent = aiBox.querySelector(".ai-content");
+  const hadSummary = Boolean(day.summary);
 
   aiStatus.textContent = force ? "Refreshing…" : "Summarizing…";
-  aiContent.innerHTML = "<p>🦞 Cooking the lobster log…</p>";
+  if (!hadSummary) {
+    aiContent.innerHTML = "<p>🦞 Cooking the lobster log…</p>";
+  }
 
   try {
     const response = await fetch("/api/summarize", {
@@ -423,6 +466,9 @@ async function summarizeDay(date, force = false) {
 
     aiStatus.textContent =
       data.cache?.source === "sqlite" ? "Cached" : "Done";
+    day.summary = data.summary;
+    day.summaryFingerprint = getCommitFingerprint(day.commits);
+    day.summaryStale = false;
     renderSummary(aiContent, data.summary);
   } catch (error) {
     aiStatus.textContent = "Failed";

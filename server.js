@@ -578,16 +578,66 @@ function buildFallbackSummary(commits) {
 
 function buildThemeHighlights(commits, maxItems = 6) {
   const themes = [
-    { key: "discord", label: "Discord integration" },
-    { key: "telegram", label: "Telegram integration" },
-    { key: "plugin", label: "Plugin architecture" },
-    { key: "dm", label: "Direct message history limits" },
-    { key: "docs", label: "Documentation" },
-    { key: "test", label: "Testing coverage" },
-    { key: "config", label: "Configuration management" },
-    { key: "release", label: "Release tooling" },
-    { key: "ci", label: "Build and CI" },
-    { key: "cli", label: "CLI tooling" },
+    {
+      key: "discord",
+      label: "Discord",
+      template: (count) =>
+        `Discord: ${count} commits across provider actions and tools.`,
+    },
+    {
+      key: "telegram",
+      label: "Telegram",
+      template: (count) =>
+        `Telegram: ${count} commits around command handling and routing.`,
+    },
+    {
+      key: "plugin",
+      label: "Plugins",
+      template: (count) =>
+        `Plugins: ${count} commits in plugin loading and tooling.`,
+    },
+    {
+      key: "dm",
+      label: "Direct messages",
+      template: (count) =>
+        `Direct messages: ${count} commits on history limits and behavior.`,
+    },
+    {
+      key: "docs",
+      label: "Docs",
+      template: (count) =>
+        `Docs: ${count} commits across guides, references, and changelog notes.`,
+    },
+    {
+      key: "test",
+      label: "Tests",
+      template: (count) =>
+        `Tests: ${count} commits improving coverage and fixtures.`,
+    },
+    {
+      key: "config",
+      label: "Config",
+      template: (count) =>
+        `Config: ${count} commits in schema, defaults, and validation.`,
+    },
+    {
+      key: "release",
+      label: "Release",
+      template: (count) =>
+        `Release: ${count} commits in packaging and release flow.`,
+    },
+    {
+      key: "ci",
+      label: "CI",
+      template: (count) =>
+        `CI: ${count} commits for pipelines and automation.`,
+    },
+    {
+      key: "cli",
+      label: "CLI",
+      template: (count) =>
+        `CLI: ${count} commits for commands and onboarding flow.`,
+    },
   ];
 
   const counts = new Map();
@@ -603,7 +653,10 @@ function buildThemeHighlights(commits, maxItems = 6) {
   return Array.from(counts.entries())
     .sort((a, b) => b[1] - a[1])
     .slice(0, maxItems)
-    .map(([label, count]) => `${label} work (${count} commits).`);
+    .map(([label, count]) => {
+      const theme = themes.find((item) => item.label === label);
+      return theme?.template ? theme.template(count) : `${label}: ${count} commits.`;
+    });
 }
 
 function parseAiResponse(rawText, commits) {
@@ -795,7 +848,7 @@ function hasIssuesSince(sinceIso, isPr) {
 function loadSummaries({ sinceIso }) {
   const rows = dbAll(
     `
-    SELECT date, summary_json
+    SELECT date, summary_json, fingerprint
     FROM daily_summaries
     WHERE repo = ? AND date >= ?
   `,
@@ -804,6 +857,7 @@ function loadSummaries({ sinceIso }) {
   return rows.map((row) => ({
     date: row.date,
     summary: row.summary_json ? JSON.parse(row.summary_json) : null,
+    fingerprint: row.fingerprint,
   }));
 }
 
@@ -1145,7 +1199,7 @@ app.get("/api/commits", async (req, res) => {
     const pullRequests = loadIssues({ sinceIso, isPr: true });
     const summaries = loadSummaries({ sinceIso });
     const summariesByDate = new Map(
-      summaries.map((entry) => [entry.date, entry.summary])
+      summaries.map((entry) => [entry.date, entry])
     );
     const issuesByDate = groupByDateKey(issues, "created_at");
     const prsByDate = groupByDateKey(pullRequests, "created_at");
@@ -1153,7 +1207,8 @@ app.get("/api/commits", async (req, res) => {
       ...day,
       issues: issuesByDate.get(day.date) || [],
       pullRequests: prsByDate.get(day.date) || [],
-      summary: summariesByDate.get(day.date) || null,
+      summary: summariesByDate.get(day.date)?.summary || null,
+      summaryFingerprint: summariesByDate.get(day.date)?.fingerprint || null,
     }));
     const initializing =
       responseCommits.length === 0 && (sync.pending || sync.timeout);
