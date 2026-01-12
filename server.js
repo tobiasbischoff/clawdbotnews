@@ -679,9 +679,24 @@ function sanitizeCommitTitle(title = "") {
   return cleaned || title.trim();
 }
 
-function extractFileHint(files = []) {
+function extractFileHint(files = [], { allowDocs = true } = {}) {
   if (!files.length) return "";
-  const pick = files.find(Boolean) || "";
+  const skipNames = new Set([
+    "CHANGELOG.md",
+    "README.md",
+    "pnpm-lock.yaml",
+    "package-lock.json",
+  ]);
+  const cleaned = files
+    .map((file) => String(file || "").trim())
+    .filter(Boolean)
+    .filter((file) => !skipNames.has(file));
+  let pick =
+    cleaned.find((file) => allowDocs || !file.startsWith("docs/")) ||
+    cleaned[0] ||
+    files.find(Boolean) ||
+    "";
+  if (!pick) return "";
   const parts = pick.split("/");
   if (parts.length >= 2) {
     return `${parts[0]}/${parts[1]}`;
@@ -799,7 +814,9 @@ function buildConcreteHighlightObjects(commits, maxItems = 6) {
     buckets.get(theme).push(commit);
   }
 
+  const otherBucket = buckets.get("Other") || [];
   const ranked = Array.from(buckets.entries())
+    .filter(([theme]) => theme !== "Other")
     .map(([theme, items]) => ({
       theme,
       items,
@@ -808,7 +825,15 @@ function buildConcreteHighlightObjects(commits, maxItems = 6) {
     .sort((a, b) => b.score - a.score)
     .slice(0, maxItems);
 
-  return ranked.map(({ theme, items }) => {
+  if (ranked.length < maxItems && otherBucket.length) {
+    ranked.push({
+      theme: "Other",
+      items: otherBucket,
+      score: otherBucket.reduce((sum, item) => sum + (item.stats?.total || 0), 0),
+    });
+  }
+
+  const highlights = ranked.map(({ theme, items }) => {
     const top = [...items].sort(
       (a, b) => (b.stats?.total || 0) - (a.stats?.total || 0)
     );
@@ -819,7 +844,8 @@ function buildConcreteHighlightObjects(commits, maxItems = 6) {
     const fileHint = extractFileHint(
       (top[0]?.files || []).map((file) =>
         typeof file === "string" ? file : file.filename || ""
-      )
+      ),
+      { allowDocs: theme === "Docs" }
     );
     const typeCounts = top.reduce((acc, item) => {
       const t = item.type || "other";
@@ -832,10 +858,38 @@ function buildConcreteHighlightObjects(commits, maxItems = 6) {
       : "Key changes across core files";
     return {
       type,
-      what: `${theme}: ${detail}`,
+      what: theme === "Other" ? `Misc: ${detail}` : `${theme}: ${detail}`,
       where: fileHint || "",
     };
   });
+
+  if (highlights.length >= maxItems) {
+    return highlights.slice(0, maxItems);
+  }
+
+  const usedShas = new Set();
+  ranked.forEach(({ items }) => items.forEach((item) => usedShas.add(item.sha)));
+  const topCommits = selectTopCommits(commits, maxItems * 2).filter(
+    (commit) => !usedShas.has(commit.sha)
+  );
+  for (const commit of topCommits) {
+    if (highlights.length >= maxItems) break;
+    const fileHint = extractFileHint(
+      (commit.files || []).map((file) =>
+        typeof file === "string" ? file : file.filename || ""
+      ),
+      { allowDocs: false }
+    );
+    const what = sanitizeCommitTitle(commit.title || "");
+    if (!what) continue;
+    highlights.push({
+      type: commit.type || "other",
+      what: `Misc: ${what}`,
+      where: fileHint || "",
+    });
+  }
+
+  return highlights;
 }
 
 function getCachedSummaryRow(date) {
@@ -1057,65 +1111,7 @@ Return a single valid JSON object only. Do not wrap it in markdown code fences.
   if (parsed) {
     parsed.type_breakdown = buildTypeBreakdown(commits);
     const minHighlights = 6;
-    const existingHighlights = Array.isArray(parsed.highlights)
-      ? parsed.highlights
-      : [];
-    let mergedHighlights = [...existingHighlights];
-
-    if (mergedHighlights.length < minHighlights && chunkSummaries.length > 1) {
-      const chunkHighlights = chunkSummaries
-        .map((summary) => summary.summary)
-        .filter(Boolean)
-        .filter((text) => text !== parsed.summary)
-        .map((text) => ({
-          type: guessHighlightType(text),
-          what: text,
-          where: "",
-        }));
-      mergedHighlights = mergedHighlights.concat(chunkHighlights);
-    }
-
-    if (mergedHighlights.length < minHighlights) {
-      mergedHighlights = mergedHighlights.concat(
-        buildConcreteHighlightObjects(commits, minHighlights)
-      );
-    }
-
-    const deduped = [];
-    const seen = new Set();
-    for (const item of mergedHighlights) {
-      const what = typeof item === "string" ? item : item.what || "";
-      const where = typeof item === "string" ? "" : item.where || "";
-      const normalized = `${what}::${where}`.trim();
-      if (!what || !normalized) continue;
-      const key = normalized.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      if (typeof item === "string") {
-        deduped.push({
-          type: guessHighlightType(item),
-          what: item,
-          where: "",
-        });
-      } else {
-        deduped.push(item);
-      }
-    }
-    let finalHighlights = deduped;
-    const genericCount = finalHighlights.filter((item) =>
-      isGenericHighlight(item.what || "")
-    ).length;
-    if (genericCount >= Math.max(2, Math.ceil(finalHighlights.length / 2))) {
-      const concrete = buildConcreteHighlightObjects(commits, minHighlights);
-      const nonGeneric = finalHighlights.filter(
-        (item) => !isGenericHighlight(item.what || "")
-      );
-      finalHighlights = [...nonGeneric, ...concrete];
-    }
-    parsed.highlights = finalHighlights.slice(
-      0,
-      Math.max(minHighlights, finalHighlights.length)
-    );
+    parsed.highlights = buildConcreteHighlightObjects(commits, minHighlights);
   }
 
   const responseSnapshot = {
