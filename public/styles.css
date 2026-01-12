@@ -84,6 +84,12 @@ body {
   border-bottom: 1px solid var(--line);
 }
 
+.topbar-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .brand {
   display: flex;
   gap: 14px;
@@ -125,6 +131,30 @@ body {
   background: var(--surface);
   font-size: 13px;
   color: var(--ink-soft);
+}
+
+.repo-link {
+  text-decoration: none;
+  color: inherit;
+}
+
+.sync-pill {
+  border: 1px solid var(--line);
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.sync-pill.syncing {
+  color: var(--gold);
+  border-color: rgba(243, 201, 122, 0.4);
+}
+
+.sync-pill.stale {
+  color: #f6b29f;
+  border-color: rgba(232, 106, 71, 0.4);
 }
 
 .container {
@@ -318,6 +348,16 @@ body {
   color: var(--ink-soft);
 }
 
+.delta-plus {
+  color: #4ad8b7;
+  font-weight: 600;
+}
+
+.delta-minus {
+  color: #f6b29f;
+  font-weight: 600;
+}
+
 .ai-box {
   background: var(--surface-muted);
   border-radius: 20px;
@@ -421,6 +461,44 @@ body {
   flex-wrap: wrap;
 }
 
+.avatar-stack {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.avatar:hover {
+  border-color: rgba(232, 106, 71, 0.5);
+}
+
+.avatar-more {
+  background: rgba(24, 20, 17, 0.7);
+}
+
 .info-stack {
   display: flex;
   flex-direction: column;
@@ -451,15 +529,20 @@ body {
   display: none;
 }
 
-.info-summary::after {
-  content: \"▾\";
-  margin-left: auto;
+.info-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.info-caret {
   color: var(--ink-soft);
+  font-size: 0.9rem;
   transition: transform 0.2s ease;
 }
 
-details[open] > .info-summary::after {
-  transform: rotate(180deg);
+details[open] .info-caret {
+  transform: rotate(90deg);
 }
 
 .info-count {

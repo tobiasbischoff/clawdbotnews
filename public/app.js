@@ -1,12 +1,17 @@
 const state = {
   days: 7,
   data: null,
+  initializing: false,
 };
+
+let pendingSyncTimer = null;
 
 const elements = {
   timeline: document.getElementById("timeline"),
   loadingCard: document.getElementById("loadingCard"),
   repoPill: document.getElementById("repoPill"),
+  repoLink: document.getElementById("repoLink"),
+  syncPill: document.getElementById("syncPill"),
 };
 
 function escapeHtml(value) {
@@ -43,15 +48,22 @@ function formatDelta(stats = {}) {
   return `+${additions} / -${deletions}`;
 }
 
-function renderEmpty(message) {
+function renderEmpty(message, title = "No commits found") {
   elements.timeline.innerHTML = `
     <div class="loading-card">
       <div>
-        <h3>No commits found</h3>
+        <h3>${escapeHtml(title)}</h3>
         <p>${escapeHtml(message)}</p>
       </div>
     </div>
   `;
+}
+
+function setLoadingMessage(title, message) {
+  const titleEl = elements.loadingCard.querySelector("h3");
+  const messageEl = elements.loadingCard.querySelector("p");
+  if (titleEl) titleEl.textContent = title;
+  if (messageEl) messageEl.textContent = message;
 }
 
 function buildDayCard(day, index) {
@@ -65,6 +77,58 @@ function buildDayCard(day, index) {
     (total, commit) => total + (commit.stats?.deletions || 0),
     0
   );
+  const statusText = day.summary
+    ? "Cached"
+    : aiEnabled
+    ? "Awaiting AI"
+    : "Disabled";
+
+  const authorsMap = new Map();
+  day.commits.forEach((commit) => {
+    const candidates = [
+      {
+        login: commit.authorLogin,
+        avatar: commit.authorAvatar,
+      },
+      {
+        login: commit.committerLogin,
+        avatar: commit.committerAvatar,
+      },
+    ];
+    candidates.forEach((user) => {
+      if (!user.login || authorsMap.has(user.login)) return;
+      authorsMap.set(user.login, {
+        login: user.login,
+        avatar:
+          user.avatar ||
+          `https://github.com/${user.login}.png?size=64`,
+      });
+    });
+  });
+  const authors = Array.from(authorsMap.values());
+  const maxAvatars = 10;
+  const visibleAuthors = authors.slice(0, maxAvatars);
+  const overflowCount = Math.max(0, authors.length - maxAvatars);
+  const avatarStack = visibleAuthors.length
+    ? `
+      <div class="avatar-stack">
+        ${visibleAuthors
+          .map(
+            (author) => `
+          <a class="avatar" href="https://github.com/${author.login}" target="_blank" rel="noreferrer" title="${author.login}">
+            <img src="${author.avatar}" alt="${author.login}" loading="lazy" />
+          </a>
+        `
+          )
+          .join("")}
+        ${
+          overflowCount
+            ? `<span class="avatar avatar-more">+${overflowCount}</span>`
+            : ""
+        }
+      </div>
+    `
+    : "";
   return `
     <article class="day-card" style="--delay: ${index * 0.05}s">
       <div class="day-header">
@@ -72,7 +136,7 @@ function buildDayCard(day, index) {
           <div class="day-title">${formatDate(day.date)}</div>
           <div class="day-meta">
             <span>${totalCommits} commits</span>
-            <span>+${additions} / -${deletions}</span>
+            <span><span class="delta-plus">+${additions}</span> / <span class="delta-minus">-${deletions}</span></span>
           </div>
         </div>
         <div class="ai-actions">
@@ -89,22 +153,28 @@ function buildDayCard(day, index) {
       <div class="ai-box" data-ai-box="${day.date}">
         <div class="ai-header">
           <span>Commit summary</span>
-          <span class="ai-status">${aiEnabled ? "Awaiting AI" : "Disabled"}</span>
+          <span class="ai-status">${statusText}</span>
         </div>
         <div class="ai-content">
-          <p>
-            ${
-              aiEnabled
-                ? "🦞 Generate the lobster log for this day’s changes."
-                : "AI summaries are disabled until the API key is configured."
-            }
-          </p>
+          ${
+            day.summary
+              ? buildSummaryHtml(day.summary)
+              : `<p>${
+                  aiEnabled
+                    ? "🦞 Generate the lobster log for this day’s changes."
+                    : "AI summaries are disabled until the API key is configured."
+                }</p>`
+          }
         </div>
+        ${avatarStack}
       </div>
       <div class="info-stack">
         <details class="info-card">
           <summary class="info-summary">
-            <span>${day.issues?.length || 0} new issues today</span>
+            <span class="info-left">
+              <span class="info-caret" aria-hidden="true">▸</span>
+              <span>${day.issues?.length || 0} new issues today</span>
+            </span>
             <span class="info-count">Issues</span>
           </summary>
           <div class="info-body">
@@ -126,7 +196,10 @@ function buildDayCard(day, index) {
         </details>
         <details class="info-card">
           <summary class="info-summary">
-            <span>${day.pullRequests?.length || 0} new pull requests today</span>
+            <span class="info-left">
+              <span class="info-caret" aria-hidden="true">▸</span>
+              <span>${day.pullRequests?.length || 0} new pull requests today</span>
+            </span>
             <span class="info-count">PRs</span>
           </summary>
           <div class="info-body">
@@ -164,12 +237,42 @@ function renderTimeline(data) {
 
 function updateMeta(data) {
   elements.repoPill.textContent = `${data.repo} · ${data.branch}`;
+  if (elements.repoLink) {
+    elements.repoLink.href = `https://github.com/${data.repo}`;
+  }
+  const syncPill = elements.syncPill;
+  if (!syncPill) return;
+  const cache = data.cache || {};
+  if (cache.pending) {
+    syncPill.hidden = false;
+    syncPill.textContent = cache.backfill
+      ? "Backfilling the last 7 days… showing cached data"
+      : "Syncing… showing cached data";
+    syncPill.className = "sync-pill syncing";
+  } else if (cache.error) {
+    syncPill.hidden = false;
+    syncPill.textContent = "Cached data (sync error)";
+    syncPill.className = "sync-pill stale";
+  } else {
+    syncPill.hidden = true;
+  }
 }
 
 async function loadCommits(force = false) {
   elements.timeline.innerHTML = "";
   elements.timeline.appendChild(elements.loadingCard);
   elements.loadingCard.style.display = "flex";
+    if (state.initializing && !force) {
+      setLoadingMessage(
+        "Syncing from GitHub…",
+        "🦞 Syncing the initial lobster log. This can take a bit on first run."
+      );
+    } else {
+      setLoadingMessage(
+        "Pulling the latest commits…",
+        "Hang tight while we build your daily brief."
+      );
+    }
 
   const params = new URLSearchParams({
     days: String(state.days),
@@ -188,20 +291,48 @@ async function loadCommits(force = false) {
     }
 
     state.data = data;
+    state.initializing = Boolean(data.cache?.initializing);
+    if (data.cache?.initializing && data.days.length === 0) {
+      const synced = data.cache?.commitCount ?? 0;
+      const issuesCount = data.cache?.issues?.count ?? 0;
+      setLoadingMessage(
+        "Syncing from GitHub…",
+        `🦞 Synced ${synced} commits${issuesCount ? ` and ${issuesCount} issues/PRs` : ""} so far…`
+      );
+      if (data.cache?.pending) {
+        if (pendingSyncTimer) clearTimeout(pendingSyncTimer);
+        pendingSyncTimer = setTimeout(() => {
+          loadCommits(false);
+        }, 6000);
+      }
+      return;
+    }
     renderTimeline(data);
     updateMeta(data);
+    if (data.cache?.pending) {
+      if (pendingSyncTimer) clearTimeout(pendingSyncTimer);
+      pendingSyncTimer = setTimeout(() => {
+        loadCommits(false);
+      }, 6000);
+    } else if (pendingSyncTimer) {
+      clearTimeout(pendingSyncTimer);
+      pendingSyncTimer = null;
+    }
     if (data.aiAvailable) {
-      summarizeAll();
+      const todayKey = new Date().toISOString().split("T")[0];
+      const today = data.days.find((day) => day.date === todayKey);
+      if (today) {
+        summarizeDay(today.date);
+      }
     }
   } catch (error) {
     renderEmpty(error.message || "Unable to load commits.");
   }
 }
 
-function renderSummary(target, summary) {
+function buildSummaryHtml(summary) {
   if (!summary) {
-    target.innerHTML = "<p>Commit summary unavailable. Try again.</p>";
-    return;
+    return "<p>Commit summary unavailable. Try again.</p>";
   }
 
   const highlightItems = summary.highlights || [];
@@ -232,7 +363,7 @@ function renderSummary(target, summary) {
     rows.push({ type: "risk", text: item });
   });
 
-  target.innerHTML = `
+  return `
     <div class="ai-summary">
       <div class="ai-feed">
         ${rows
@@ -248,6 +379,10 @@ function renderSummary(target, summary) {
       </div>
     </div>
   `;
+}
+
+function renderSummary(target, summary) {
+  target.innerHTML = buildSummaryHtml(summary);
 }
 
 async function summarizeDay(date, force = false) {
