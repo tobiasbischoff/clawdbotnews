@@ -22,7 +22,7 @@
 
 ## Commit & Pull Request Guidelines
 - This repo does not enforce a commit format. Use clear, imperative messages.
-- Recommended prefixes (consistent with the upstream `clawdbot` repo): `feat`, `fix`, `refactor`, `docs`, `test`, `chore`.
+- Recommended prefixes (consistent with the upstream `moltbot` repo): `feat`, `fix`, `refactor`, `docs`, `test`, `chore`.
 - PRs should include a short description of user-facing impact and screenshots for UI changes.
 
 ## Security & Configuration Tips

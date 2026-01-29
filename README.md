@@ -1,6 +1,6 @@
-# Clawdbot Daily
+# Moltbot Daily
 
-Lobster-grade daily summaries of the `clawdbot/clawdbot` repository. 🦞
+Lobster-grade daily summaries of the `moltbot/moltbot` repository. 🦞
 
 ## What it does
 - Pulls commits, issues, and pull requests from GitHub and groups them by day.
@@ -20,10 +20,10 @@ Then open `http://localhost:3000`.
 - `ANTHROPIC_BASE_URL` (required for AI): `https://api.minimax.io/anthropic` (global) or `https://api.minimaxi.com/anthropic` (China).
 - `ANTHROPIC_API_KEY` (required for AI): your MiniMax key.
 - `ANTHROPIC_MODEL` (optional): defaults to `MiniMax-M2.1`.
-- `GITHUB_REPO` (optional): defaults to `clawdbot/clawdbot`.
+- `GITHUB_REPO` (optional): defaults to `moltbot/moltbot`.
 - `GITHUB_BRANCH` (optional): defaults to `main`.
 - `GITHUB_TOKEN` (optional): increases GitHub rate limits.
-- `CACHE_DB_PATH` (optional): SQLite location (default `./data/clawdbotnews.sqlite`).
+- `CACHE_DB_PATH` (optional): SQLite location (default `./data/moltbotnews.sqlite`).
 - `SYNC_INTERVAL_MINUTES` (optional): how often GitHub is polled (default `10`).
 - `MAX_COMMITS_PER_PROMPT` (optional): commit threshold before chunking (default `2000`).
 - `CHUNK_SIZE` (optional): commits per chunk when chunking is needed (default `200`).

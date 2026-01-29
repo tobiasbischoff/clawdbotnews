@@ -16,7 +16,7 @@ app.use(express.json({ limit: "1mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 const PORT = process.env.PORT || 3000;
-const REPO = process.env.GITHUB_REPO || "clawdbot/clawdbot";
+const REPO = process.env.GITHUB_REPO || "moltbot/moltbot";
 const BRANCH = process.env.GITHUB_BRANCH || "main";
 const GH_BASE = `https://api.github.com/repos/${REPO}`;
 const GH_GRAPHQL = "https://api.github.com/graphql";
@@ -2478,7 +2478,7 @@ app.get("/feed.xml", (req, res) => {
       (total, commit) => total + (commit.stats?.deletions || 0),
       0
     );
-    const title = `Clawdbot news — ${day.date} (${day.commits.length} commits)`;
+    const title = `Moltbot news — ${day.date} (${day.commits.length} commits)`;
     const summaryText = summary?.summary || "Summary not available yet.";
     const buckets = summary?.buckets || [];
     const bucketText = buckets.length
@@ -2514,7 +2514,7 @@ ${bucketHtml}
   const rss = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
   <channel>
-    <title>${escapeXml(`Clawdbot news — ${REPO}`)}</title>
+    <title>${escapeXml(`Moltbot news — ${REPO}`)}</title>
     <link>${escapeXml(baseUrl)}</link>
     <atom:link href="${escapeXml(feedUrl)}" rel="self" type="application/rss+xml" />
     <description>${escapeXml(
@@ -2533,5 +2533,5 @@ app.get("*", (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Clawdbot news dashboard running on http://localhost:${PORT}`);
+  console.log(`Moltbot news dashboard running on http://localhost:${PORT}`);
 });
